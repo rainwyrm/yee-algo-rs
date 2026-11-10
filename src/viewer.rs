@@ -34,7 +34,7 @@ struct PlaybackState {
     last_time: f64,
     /// display gain multiplied onto the field before color mapping
     gain: f32,
-    /// reserved for future stuff & tomfoolery
+    /// used for toggling between filtering
     smooth: bool,
     /// set whenever the pixel buffer must be regenerated.
     /// cleared after the texture has been re-uploaded
@@ -304,6 +304,16 @@ impl EventHandler for Viewer {
                 self.playback.dirty = true;
             }
             KeyCode::F => {
+                self.playback.smooth = !self.playback.smooth;
+                let f = if self.playback.smooth {
+                    FilterMode::Linear
+                } else {
+                    FilterMode::Nearest
+                };
+                self.ctx
+                    .texture_set_filter(self.texture, f, MipmapFilterMode::None);
+            }
+            KeyCode::R => {
                 self.playback.frame = 0;
                 self.playback.accumulation = 0.0;
                 self.playback.dirty = true;
