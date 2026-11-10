@@ -7,7 +7,9 @@ const OBSTACLE_RGBA: [u8; 4] = [110, 110, 110, 255];
 
 #[repr(C)]
 struct Vertex {
+    /// position in normalised coordinates (`-1..=1`)
     pos: [f32; 2],
+    /// texture coordinate (`0..=1`)
     uv: [f32; 2],
 }
 
@@ -25,6 +27,7 @@ struct PlaybackState {
 }
 
 impl PlaybackState {
+    /// 0..n@120fps
     fn new() -> Self {
         Self {
             frame: 0,
@@ -42,6 +45,7 @@ impl PlaybackState {
 
 // ---- viewer ----------------------------------------- {{{
 struct Viewer {
+    // c/gpu resources
     ctx: Box<dyn RenderingBackend>,
     pipeline: Pipeline,
     bindings: Bindings,
@@ -84,6 +88,7 @@ impl Viewer {
         }
     }
 
+    /// black rgba texture
     fn create_texture(ctx: &mut dyn RenderingBackend, w: usize, h: usize) -> (TextureId, Vec<u8>) {
         let pixels = vec![0u8; w * h * 4];
         let texture = ctx.new_texture_from_rgba8(w as u16, h as u16, &pixels);
@@ -91,6 +96,7 @@ impl Viewer {
         (texture, pixels)
     }
 
+    /// build fullscreen quad and bind `texture to it`
     fn create_quad_bindings(ctx: &mut dyn RenderingBackend, texture: TextureId) -> Bindings {
         let vertices = Self::get_vertices();
         let indices: [u16; 6] = [0, 1, 2, 0, 2, 3];
@@ -114,6 +120,9 @@ impl Viewer {
         }
     }
 
+    /// compile vertex & fragment shaders and create the render pipeline
+    /// TODO:
+    /// - play around with pipeline options
     fn create_pipeline(ctx: &mut dyn RenderingBackend) -> Pipeline {
         let shader = ctx
             .new_shader(
@@ -138,6 +147,8 @@ impl Viewer {
         )
     }
 
+    /// all corners of the quad counter clockwise
+    /// texture row 0 -> bottom edge of window
     #[rustfmt::skip]
     fn get_vertices() -> [Vertex; 4] {
         [
@@ -148,6 +159,8 @@ impl Viewer {
         ]
     }
 
+    /// + -> red
+    /// - -> blue
     fn colormap(&self, v: f32) -> [u8; 4] {
         let v = (v * self.playback.gain).clamp(-1.0, 1.0);
         let c = (v.abs() * 255.0).round() as u8;
@@ -158,6 +171,7 @@ impl Viewer {
         }
     }
 
+    /// regen cpu pixel buffer for current frame
     fn fill_pixels(&mut self) {
         let n = 2 * self.playback.frame;
         for j in 0..self.tex_h {
@@ -174,6 +188,7 @@ impl Viewer {
         }
     }
 
+    /// move current frame by delta, marks display as needing a redraw
     fn step(&mut self, delta: isize) {
         let f = self.playback.frame as isize + delta;
         self.playback.frame = f.rem_euclid(self.frames as isize) as usize;
@@ -182,6 +197,10 @@ impl Viewer {
 }
 // ------------------------------------------------------ }}}
 
+// ---- event handler ---------------------------------- {{{
+
+/// elapsed time since last call is converted into frames
+/// at `frames_per_sec`. Non-whole frames are kept in `accumulation`.
 impl EventHandler for Viewer {
     fn update(&mut self) {
         let now = date::now();
@@ -198,6 +217,8 @@ impl EventHandler for Viewer {
         }
     }
 
+    /// reuploads exture if the frame or gain changed,
+    /// then draws the textured quad
     fn draw(&mut self) {
         if self.playback.dirty {
             self.fill_pixels();
@@ -249,7 +270,10 @@ impl EventHandler for Viewer {
         }
     }
 }
+// ------------------------------------------------------ }}}
 
+/// GSLS ES 1.00 vertex shader passes the quad position through
+/// and forwards the texture coordinate
 const VERTEX: &str = r#"#version 100
 attribute vec2 in_pos;
 attribute vec2 in_uv;
@@ -259,6 +283,7 @@ void main() {
     uv = in_uv;
 }"#;
 
+/// GSLS ES 1.00 fragment shader samples the field texture unmodified
 const FRAGMENT: &str = r#"#version 100
 varying lowp vec2 uv;
 uniform sampler2D tex;
