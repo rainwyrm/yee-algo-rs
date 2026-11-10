@@ -9,7 +9,7 @@ listed under `[dependencies]` in `Cargo.toml`
 
 # Building & running
 ```
-git clone [url] && cd yee-algo-rs
+git clone https://gitlab.dwd.de/sgeissle/yee-algo-rs# && cd yee-algo-rs
 cargo run --release -- --renderer opengl 
 ```
 
@@ -17,3 +17,12 @@ Note: When no renderer argument is passed, the program defaults to rendering in 
 Renderer options are:
 - opengl
 - terminal
+
+# Window Keybinds
+Space       - Pause/Resume
+Left/Right  - Step one frame
+Up/Down     - Playback speed x2/÷2
+PgUp/PgDn   - color gain x1.5/÷1.5
+F           - toggle between nearest/bilinear filtering
+R           - restart
+Esc         - quit
