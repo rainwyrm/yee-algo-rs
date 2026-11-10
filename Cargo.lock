@@ -77,5 +77,6 @@ name = "yee-algo"
 version = "0.1.0"
 dependencies = [
  "lexopt",
+ "libc",
  "miniquad",
 ]

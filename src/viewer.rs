@@ -1,11 +1,20 @@
 use miniquad::*;
 
-use crate::{dimensions::Array3D, geometry::Obstacle};
+use crate::colormap::{self, OBSTACLE_RGB, Scale};
+use crate::frames::Frames;
+use crate::geometry::{Constants, Obstacle};
 
-/// initial window width and height in pixels (square window)
-const WINDOW_PX: i32 = 720;
-/// color of obstacle cells
-const OBSTACLE_RGBA: [u8; 4] = [110, 110, 110, 255];
+/// the window edge is the smallest whole multiple of the grid
+/// size that reaches this many pixels, so every cell is drawn as a
+/// square of identical size
+const WINDOW_PX: usize = 720;
+/// bounds for the display gain
+const GAIN_RANGE: (f32, f32) = (1.0 / 64.0, 64.0);
+/// bounds for the playback speed in frames per second
+const FPS_RANGE: (f64, f64) = (1.0, 1000.0);
+/// default playback speed. one frame is `DELTA_T` simulation units, so this
+/// plays 7.5 simulation units per second
+const DEFAULT_FPS: f64 = 30.0;
 
 /// a vertex of the fullscreen quad
 #[repr(C)] // guarantees exact element ordering in memory, like in C
@@ -18,12 +27,10 @@ struct Vertex {
 
 // ---- playback state --------------------------------- {{{
 /// mutable state controlling which frame is shown and how fast it advances
-#[allow(dead_code)]
 struct PlaybackState {
-    /// index of the frame currently shown (`0..frames`).
-    /// the corresponding doubled-grid time index is `2 * frame`
+    /// index of the frame currently shown (`0..frames`)
     frame: usize,
-    /// when `true`, [`EventHandler::update`] does advance the frame
+    /// when `true`, [`EventHandler::update`] does not advance the frame
     paused: bool,
     /// target playback speed in simulation frames per second of wall time
     frames_per_sec: f64,
@@ -34,7 +41,9 @@ struct PlaybackState {
     last_time: f64,
     /// display gain multiplied onto the field before color mapping
     gain: f32,
-    /// used for toggling between filtering
+    /// how magnitude maps to intensity (toggled with `C`)
+    scale: Scale,
+    /// bilinear instead of nearest neighbour filtering (toggled with `F`)
     smooth: bool,
     /// set whenever the pixel buffer must be regenerated.
     /// cleared after the texture has been re-uploaded
@@ -42,15 +51,16 @@ struct PlaybackState {
 }
 
 impl PlaybackState {
-    /// 0..n@120fps
+    /// 0..n@30fps
     fn new() -> Self {
         Self {
             frame: 0,
             paused: false,
-            frames_per_sec: 120.0,
+            frames_per_sec: DEFAULT_FPS,
             accumulation: 0.0,
             last_time: date::now(),
             gain: 1.0,
+            scale: Scale::Linear,
             smooth: false,
             dirty: true,
         }
@@ -68,16 +78,10 @@ struct Viewer {
     texture: TextureId,
 
     // data
-    /// the complete `E_z` history, in doubled-grid indices
-    e_z: Array3D<f32>,
+    /// the complete `E_z` history
+    frames: Frames,
     obstacle: Obstacle,
-    /// texture width in pixels (= number of cells along x)
-    tex_w: usize,
-    /// texture height in pixels (= number of cells along y)
-    tex_h: usize,
-    /// number of playable frames (= number of `E_z` time steps)
-    frames: usize,
-    /// cpu-side RGBA staging buffer, `tex_w * tex_h * 4` bytes
+    /// cpu-side RGBA staging buffer, `nx * ny * 4` bytes
     pixels: Vec<u8>,
 
     playback: PlaybackState,
@@ -87,18 +91,14 @@ impl Viewer {
     /// creates the rendering backend, texture, quad and shader
     /// for the given field data
     ///
-    /// the texture has one pixel per physical cell, i.e. half the array
-    /// resolution in each of `x` and `y`, and
-    /// there is one frame per physical time step
+    /// the texture has one pixel per cell, and
+    /// there is one frame per recorded time step
     ///
     /// must be called after the window exists.
-    fn new(e_z: Array3D<f32>, obstacle: Obstacle) -> Self {
-        let (nx, ny, nt) = e_z.dims();
-        let (tex_w, tex_h, frames) = (nx / 2, ny / 2, nt / 2);
-
+    fn new(frames: Frames, obstacle: Obstacle) -> Self {
         let mut ctx = window::new_rendering_backend();
 
-        let (texture, pixels) = Self::create_texture(&mut *ctx, tex_w, tex_h);
+        let (texture, pixels) = Self::create_texture(&mut *ctx, frames.nx(), frames.ny());
         let bindings = Self::create_quad_bindings(&mut *ctx, texture);
         let pipeline = Self::create_pipeline(&mut *ctx);
 
@@ -107,11 +107,8 @@ impl Viewer {
             pipeline,
             bindings,
             texture,
-            e_z,
-            obstacle,
-            tex_w,
-            tex_h,
             frames,
+            obstacle,
             pixels,
             playback: PlaybackState::new(),
         }
@@ -188,38 +185,24 @@ impl Viewer {
         ]
     }
 
-    /// maps a field value to an opaque RGBA color
-    ///
-    /// the value is scaled by the current display gain and clamped to
-    /// `[-1, 1]`. positive values become red, negative values blue,
-    /// with intensity proportional to magnitude
-    fn colormap(&self, v: f32) -> [u8; 4] {
-        let v = (v * self.playback.gain).clamp(-1.0, 1.0);
-        let c = (v.abs() * 255.0).round() as u8;
-        if v >= 0.0 {
-            [c, 0, 0, 255]
-        } else {
-            [0, 0, c, 255]
-        }
-    }
-
     /// Regenerates the cpu pixel buffer for the current frame
     ///
-    /// pixel `(i, j)` samples the array at doubled indices
-    /// `(2i, 2j, 2*frame)`, i.e. only the true `E_z` nodes.
+    /// the frame is already laid out as a texture (rows of `nx` values,
+    /// row 0 = `y = 0`), so pixel `(i, j)` is simply element `j * nx + i`.
     /// pixels inside the obstacle are painted grey.
     fn fill_pixels(&mut self) {
-        let n = 2 * self.playback.frame;
-        for j in 0..self.tex_h {
-            for i in 0..self.tex_w {
-                let (gi, gj) = (2 * i, 2 * j);
-                let rgba = if self.obstacle.contains(gi, gj) {
-                    OBSTACLE_RGBA
+        let nx = self.frames.nx();
+        let frame = self.frames.frame(self.playback.frame);
+        let (gain, scale) = (self.playback.gain, self.playback.scale);
+        for (j, row) in frame.chunks_exact(nx).enumerate() {
+            for (i, &v) in row.iter().enumerate() {
+                let [r, g, b] = if self.obstacle.contains(i, j) {
+                    OBSTACLE_RGB
                 } else {
-                    self.colormap(self.e_z[(gi, gj, n)])
+                    colormap::signed_rgb(v, gain, scale)
                 };
-                let p = 4 * (j * self.tex_w + i);
-                self.pixels[p..p + 4].copy_from_slice(&rgba);
+                let p = 4 * (j * nx + i);
+                self.pixels[p..p + 4].copy_from_slice(&[r, g, b, 255]);
             }
         }
     }
@@ -227,8 +210,9 @@ impl Viewer {
     /// moves the current frame by `delta`, wrapping around at both ends,
     /// and marks the display as needing a redraw
     fn step(&mut self, delta: isize) {
+        let n = self.frames.count() as isize;
         let f = self.playback.frame as isize + delta;
-        self.playback.frame = f.rem_euclid(self.frames as isize) as usize;
+        self.playback.frame = f.rem_euclid(n) as usize;
         self.playback.dirty = true;
     }
 }
@@ -239,13 +223,14 @@ impl Viewer {
 /// advances playback according to wall-clock time
 ///
 /// the elapsed time since the last call (capped at 0.1s so that a stall
-/// or window drag does not cause a huge jump) is converted into frames
-/// at `frames_per_sec`. only whole frames are applied, the fractional
+/// or window drag does not cause a huge jump, and floored at 0 because
+/// `date::now` is the wall clock, which may step backwards) is converted into
+/// frames at `frames_per_sec`. only whole frames are applied, the fractional
 /// remainder is kept in `accumulation`
 impl EventHandler for Viewer {
     fn update(&mut self) {
         let now = date::now();
-        let dt = (now - self.playback.last_time).min(0.1);
+        let dt = (now - self.playback.last_time).clamp(0.0, 0.1);
         self.playback.last_time = now;
         if self.playback.paused {
             return;
@@ -277,35 +262,37 @@ impl EventHandler for Viewer {
     }
 
     /// handles the key bindings listed in the README
-    fn key_down_event(&mut self, _keycode: KeyCode, _keymods: KeyMods, _repeat: bool) {
-        match _keycode {
+    fn key_down_event(&mut self, keycode: KeyCode, _keymods: KeyMods, repeat: bool) {
+        let p = &mut self.playback;
+        match keycode {
             KeyCode::Escape => window::order_quit(),
-            KeyCode::Space => self.playback.paused = !self.playback.paused,
+            // a held key must not flicker between paused and playing
+            KeyCode::Space if !repeat => p.paused = !p.paused,
             KeyCode::Right => {
-                self.playback.paused = true;
+                p.paused = true;
                 self.step(1);
             }
             KeyCode::Left => {
-                self.playback.paused = true;
+                p.paused = true;
                 self.step(-1);
             }
-            KeyCode::Up => {
-                self.playback.frames_per_sec = (self.playback.frames_per_sec * 2.0).min(4000.0)
-            }
-            KeyCode::Down => {
-                self.playback.frames_per_sec = (self.playback.frames_per_sec / 2.0).max(1.0)
-            }
+            KeyCode::Up => p.frames_per_sec = (p.frames_per_sec * 2.0).min(FPS_RANGE.1),
+            KeyCode::Down => p.frames_per_sec = (p.frames_per_sec / 2.0).max(FPS_RANGE.0),
             KeyCode::PageUp => {
-                self.playback.gain *= 1.5;
-                self.playback.dirty = true;
+                p.gain = (p.gain * 1.5).min(GAIN_RANGE.1);
+                p.dirty = true;
             }
             KeyCode::PageDown => {
-                self.playback.gain /= 1.5;
-                self.playback.dirty = true;
+                p.gain = (p.gain / 1.5).max(GAIN_RANGE.0);
+                p.dirty = true;
             }
-            KeyCode::F => {
-                self.playback.smooth = !self.playback.smooth;
-                let f = if self.playback.smooth {
+            KeyCode::C if !repeat => {
+                p.scale = p.scale.toggled();
+                p.dirty = true;
+            }
+            KeyCode::F if !repeat => {
+                p.smooth = !p.smooth;
+                let f = if p.smooth {
                     FilterMode::Linear
                 } else {
                     FilterMode::Nearest
@@ -314,9 +301,9 @@ impl EventHandler for Viewer {
                     .texture_set_filter(self.texture, f, MipmapFilterMode::None);
             }
             KeyCode::R => {
-                self.playback.frame = 0;
-                self.playback.accumulation = 0.0;
-                self.playback.dirty = true;
+                p.frame = 0;
+                p.accumulation = 0.0;
+                p.dirty = true;
             }
             _ => {}
         }
@@ -329,7 +316,7 @@ impl EventHandler for Viewer {
 const VERTEX: &str = r#"#version 100
 attribute vec2 in_pos;
 attribute vec2 in_uv;
-varying lowp vec2 uv;
+varying highp vec2 uv;
 void main() {
     gl_Position = vec4(in_pos, 0.0, 1.0);
     uv = in_uv;
@@ -337,25 +324,49 @@ void main() {
 
 /// Fragment shader (GLSL ES 1.00): samples the field texture unmodified.
 const FRAGMENT: &str = r#"#version 100
-varying lowp vec2 uv;
+varying highp vec2 uv;
 uniform sampler2D tex;
 void main() {
     gl_FragColor = texture2D(tex, uv);
 }"#;
 
+/// the window edge for a grid `n` cells wide: the smallest whole number
+/// of pixels per cell that reaches [`WINDOW_PX`]
+fn window_edge(n: usize) -> i32 {
+    (n * WINDOW_PX.div_ceil(n).max(1)) as i32
+}
+
 /// opens a window and plays back the `E_z` history until the user quits.
 ///
 /// takes ownership of the data. This call blocks until the window is
 /// closed (or `Esc` is pressed).
-///
-/// `e_z` must be in doubled-grid indices with even `x`, `y` and time size,
-/// as produced by the solver in `main.rs`.
-pub fn run(e_z: Array3D<f32>, obstacle: Obstacle) {
+pub fn run(frames: Frames, obstacle: Obstacle) {
     let conf = conf::Conf {
-        window_title: "2D FDTD (TMz) - E_z".to_string(),
-        window_width: WINDOW_PX,
-        window_height: WINDOW_PX,
+        window_title: format!(
+            "2D FDTD (TMz) - E_z - {} x {} cells, dt = {}",
+            frames.nx(),
+            frames.ny(),
+            Constants::DELTA_T
+        ),
+        window_width: window_edge(frames.nx()),
+        window_height: window_edge(frames.ny()),
+        // the quad is stretched over the window, so a resizable window
+        // would distort the cells
+        window_resizable: false,
         ..Default::default()
     };
-    miniquad::start(conf, move || Box::new(Viewer::new(e_z, obstacle)));
+    miniquad::start(conf, move || Box::new(Viewer::new(frames, obstacle)));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn window_edge_is_a_whole_multiple_of_the_grid() {
+        assert_eq!(window_edge(200), 800);
+        assert_eq!(window_edge(60), 720);
+        assert_eq!(window_edge(1000), 1000);
+        assert_eq!(window_edge(720), 720);
+    }
 }

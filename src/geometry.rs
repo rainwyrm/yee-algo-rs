@@ -6,20 +6,20 @@
 /// [`Obstacle::contains`] is true, which models a
 /// PEC scatterer (tangential `E` vanishes on a perfect conductor)
 ///
-/// the edge is approximated on the grid, so obstacle sides
-/// are always aligned with the grid axes
+/// the sides are always aligned with the grid axes, so the model is exact
+/// (there is no staircase error). note that the PEC surface runs through the
+/// outermost nodes: a `6 x 21` node obstacle is a `5 x 20` cell conductor
 #[derive(Clone, Copy, Debug)]
 pub struct Obstacle {
-    /// inclusive `(min, max)` range of the doubled `i` (x) index
+    /// inclusive `(min, max)` range of the cell index `i` (x)
     pub x: (usize, usize),
-    /// inclusive `(min, max)` range of the doubled `j` (y) index
+    /// inclusive `(min, max)` range of the cell index `j` (y)
     pub y: (usize, usize),
 }
 
 /// one of the four sides of an [`Obstacle`]
 ///
-/// the names refer to the index ordering,
-/// not to a particular on-screen orientation (differs between renderers)
+/// the names refer to the index ordering, not to an on-screen orientation
 ///
 /// * `Top` / `Bottom` -- the sides at `j == y.0` / `j == y.1`
 /// * `Left` / `Right` -- the sides at `i == x.0` / `i == x.1`
@@ -33,15 +33,26 @@ pub enum Edge {
 }
 
 impl Obstacle {
-    /// returns `true` if the doubled-grid point `(i, j)` lies on
+    /// returns `true` if the node `(i, j)` lies on
     /// or inside the rectangle (bounds inclusive)
     pub fn contains(&self, i: usize, j: usize) -> bool {
         i >= self.x.0 && i <= self.x.1 && j >= self.y.0 && j <= self.y.1
     }
 
+    /// returns `true` if the rectangle is well formed and lies strictly
+    /// inside an `nx * ny` grid, i.e. it does not touch the outer PEC wall
+    pub fn fits_in(&self, nx: usize, ny: usize) -> bool {
+        self.x.0 <= self.x.1
+            && self.y.0 <= self.y.1
+            && self.x.0 >= 1
+            && self.y.0 >= 1
+            && self.x.1 < nx - 1
+            && self.y.1 < ny - 1
+    }
+
     /// classifies a point on the obstacle's boundary
     ///
-    /// returns [`Edge`] that `(i, j)` lies on,
+    /// returns the [`Edge`] that `(i, j)` lies on,
     /// or `None` if the point is not on the boundary.
     /// corner points are deliberately excluded,
     /// as are points strictly inside or outside the rectangle
@@ -91,29 +102,104 @@ pub struct View {
 /// the 2-D Courant condition requires
 /// `c * delta_t * sqrt(1 / (delta_x^2) + 1 / (delta_y^2)) <= 1.0`
 ///
-/// with the values below,
-/// `delta_t = 0.0625`, `delta_x = delta_y = 0.5`
-/// the left hand side is `~ 0.177`, well inside the stable range (<= 1.0)
+/// with `delta_x = delta_y = 0.5` and [`COURANT`](Constants::COURANT) `= 0.5`
+/// the left hand side is `~ 0.707`, which is the largest value the
+/// scheme tolerates divided by `sqrt(2)`
+/// (see the compile time check in [`crate::solver`])
+///
+/// # Resolution
+///
+/// numerical dispersion of the Yee scheme depends on how many cells span one
+/// wavelength. the pulse uses [`WAVELENGTH_CELLS`](Constants::WAVELENGTH_CELLS)
+/// `= 10`, for which the phase velocity error along an axis is about `-1.2 %`
+/// (a wavelength of 4.8 cells would be off by `-6.9 %` and its group velocity
+/// would be only `0.8 c`)
 pub struct Constants;
 
 impl Constants {
     /// number of yee cells along x (`i` direction)
-    /// therefore, the doubled-index array is `2 * MAX_I` wide
     pub const MAX_I: usize = 200;
     /// number of yee cells along y (`j` direction)
     pub const MAX_J: usize = 200;
-    /// number of full time steps (`E` updates) to simulate.
-    /// the doubled-index time axis has `2 * MAX_TIME` entries.
-    pub const MAX_TIME: usize = 800;
+    /// simulated time span in simulation units
+    pub const DURATION: f32 = 75.0;
+    /// number of stored frames: the initial state plus `MAX_TIME - 1`
+    /// full time steps
+    pub const MAX_TIME: usize = (Constants::DURATION / Constants::DELTA_T) as usize;
     /// intrinsic impedance of free space `eta_0 ~ 376.7 ohm`
     pub const IMPEDANCE: f32 = 376.7;
-    /// characteristic width of the initial pulse, in simulation length units.
-    /// the grid spacing and time step are derived from it.
-    pub const INIT_WAVE_WIDTH: f32 = 4.0;
-    /// time step `delta_t = INIT_WAVE_WIDTH / 64`
-    pub const DELTA_T: f32 = Constants::INIT_WAVE_WIDTH / (16.0 * 4.0);
-    /// grid spacing in x, `delta_x = INIT_WAVE_WIDTH / 8`
-    pub const DELTA_X: f32 = Constants::INIT_WAVE_WIDTH / 8.0;
-    /// grid spacing in y, `delta_y = INIT_WAVE_WIDTH / 8`
-    pub const DELTA_Y: f32 = Constants::INIT_WAVE_WIDTH / 8.0;
+    /// grid spacing in x
+    pub const DELTA_X: f32 = 0.5;
+    /// grid spacing in y
+    pub const DELTA_Y: f32 = 0.5;
+    /// courant number `c * delta_t / delta_x`. the 2-D stability limit is
+    /// `1 / sqrt(2) ~ 0.707`
+    pub const COURANT: f32 = 0.5;
+    /// time step, `delta_t = COURANT * delta_x` (with `c = 1`)
+    pub const DELTA_T: f32 = Constants::COURANT * Constants::DELTA_X;
+    /// carrier wavelength of the initial pulse, in cells
+    pub const WAVELENGTH_CELLS: f32 = 10.0;
+    /// length of the initial pulse (its raised-cosine envelope), in cells.
+    /// three wavelengths keep the spectrum narrow enough that dispersion
+    /// does not smear the pulse
+    pub const PULSE_CELLS: f32 = 30.0;
+    /// first row (cell index `j`) covered by the initial pulse
+    pub const PULSE_START: usize = 1;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OBST: Obstacle = Obstacle {
+        x: (3, 5),
+        y: (4, 8),
+    };
+
+    #[test]
+    fn contains_is_inclusive() {
+        assert!(OBST.contains(3, 4));
+        assert!(OBST.contains(5, 8));
+        assert!(OBST.contains(4, 6));
+        assert!(!OBST.contains(2, 6));
+        assert!(!OBST.contains(4, 9));
+    }
+
+    #[test]
+    fn fits_in_rejects_wall_contact_and_bad_rects() {
+        assert!(OBST.fits_in(10, 10));
+        assert!(!OBST.fits_in(6, 10)); // x.1 == nx - 1
+        assert!(
+            !Obstacle {
+                x: (0, 2),
+                y: (1, 2)
+            }
+            .fits_in(10, 10)
+        );
+        assert!(
+            !Obstacle {
+                x: (4, 3),
+                y: (1, 2)
+            }
+            .fits_in(10, 10)
+        );
+    }
+
+    #[test]
+    fn edges_exclude_corners_and_interior() {
+        assert_eq!(OBST.edge_at(4, 4), Some(Edge::Top));
+        assert_eq!(OBST.edge_at(4, 8), Some(Edge::Bottom));
+        assert_eq!(OBST.edge_at(3, 6), Some(Edge::Left));
+        assert_eq!(OBST.edge_at(5, 6), Some(Edge::Right));
+        assert_eq!(OBST.edge_at(3, 4), None); // corner
+        assert_eq!(OBST.edge_at(4, 6), None); // interior
+    }
+
+    #[test]
+    fn derived_constants_are_consistent() {
+        assert_eq!(Constants::DELTA_T, 0.25);
+        assert_eq!(Constants::MAX_TIME, 300);
+        // the pulse must fit above the bottom wall and below the top wall
+        assert!(Constants::PULSE_START as f32 + Constants::PULSE_CELLS < Constants::MAX_J as f32);
+    }
 }

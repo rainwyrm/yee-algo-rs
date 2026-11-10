@@ -2,7 +2,12 @@
 name = "yee-algo"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
 
 [dependencies]
 miniquad = "0.4"
 lexopt = "0.3"
+
+# only used to query the terminal size (ioctl TIOCGWINSZ)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
