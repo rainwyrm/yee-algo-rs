@@ -1,0 +1,7 @@
+[package]
+name = "yee-algo"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+miniquad = "0.4"
