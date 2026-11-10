@@ -1,8 +1,9 @@
+#![allow(dead_code)]
 use std::fmt;
 use std::io::{self, BufWriter, Write};
 
-use crate::dimensions::{self, Array3D};
-use crate::geometry::{self, Constants, Obstacle, View};
+use crate::dimensions::Array3D;
+use crate::geometry::{Constants, Obstacle};
 
 // ---- term helpers ----------------------------------- {{{
 const FAT_BLOCK: char = '\u{2588}';

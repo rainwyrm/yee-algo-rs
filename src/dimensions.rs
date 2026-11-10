@@ -18,7 +18,8 @@ impl<T: Default + Clone> Array3D<T> {
         }
     }
 
-    // reset all elements to T::default()
+    // resets all elements to T::default()
+    #[allow(dead_code)]
     pub fn set_null(&mut self) {
         self.data.fill(T::default());
     }
@@ -31,6 +32,7 @@ impl<T> Array3D<T> {
         x + y * self.width + z * self.width * self.height
     }
 
+    #[allow(dead_code)]
     pub fn get(&self, x: usize, y: usize, z: usize) -> Option<&T> {
         if x < self.width && y < self.height && z < self.depth {
             self.data
@@ -49,6 +51,7 @@ impl<T> Array3D<T> {
         (self.width, self.height, self.depth)
     }
 
+    #[allow(dead_code)]
     pub fn as_slice(&self) -> &[T] {
         &self.data
     }

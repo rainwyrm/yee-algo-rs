@@ -5,6 +5,7 @@ pub struct Obstacle {
     pub y: (usize, usize),
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Edge {
     Top,
@@ -17,6 +18,8 @@ impl Obstacle {
     pub fn contains(&self, i: usize, j: usize) -> bool {
         i >= self.x.0 && i <= self.x.1 && j >= self.y.0 && j <= self.y.1
     }
+
+    #[allow(dead_code)]
     pub fn edge_at(&self, i: usize, j: usize) -> Option<Edge> {
         let (x0, x1) = self.x;
         let (y0, y1) = self.y;
@@ -38,11 +41,13 @@ impl Obstacle {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub struct View {
     pub obstacle: Obstacle,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 pub struct Constants {
     max_i: usize,

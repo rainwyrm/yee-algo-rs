@@ -12,6 +12,7 @@ struct Vertex {
 }
 
 // ---- playback state --------------------------------- {{{
+#[allow(dead_code)]
 struct PlaybackState {
     frame: usize,
     paused: bool,
