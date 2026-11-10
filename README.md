@@ -1,15 +1,15 @@
 # yee-algo (now in rust!)
-- uses the minisquad crate for opengl rendering
+- uses the miniquad crate for opengl rendering
 - uses lexopt for argument parsing
 
 # Dependencies
-Requires a modern (2024+) rust toolchain to compile.
+Requires a modern (>=1.85) rust toolchain to compile.
 Third-party crates will be downloaded automatically, and are
 listed under `[dependencies]` in `Cargo.toml`
 
 # Building & running
 ```
-git clone https://gitlab.dwd.de/sgeissle/yee-algo-rs# && cd yee-algo-rs
+git clone https://gitlab.dwd.de/sgeissle/yee-algo-rs && cd yee-algo-rs
 cargo run --release -- --renderer opengl 
 ```
 
