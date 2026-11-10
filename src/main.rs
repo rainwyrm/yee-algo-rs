@@ -68,12 +68,13 @@ fn main() {
             }
         }
     }
+    // for t in (2..NT).step_by(2) {
+    //     terminal::clear_screen();
+    //     if terminal::print_time(t, &E_z, &obst).is_err() {
+    //         break;
+    //     }
+    //     thread::sleep(Duration::from_millis(5));
+    // }
 
-    for t in (2..NT).step_by(2) {
-        terminal::clear_screen();
-        if terminal::print_time(t, &E_z, &obst).is_err() {
-            break;
-        }
-        thread::sleep(Duration::from_millis(5));
-    }
+    viewer::run(E_z, obst);
 }
